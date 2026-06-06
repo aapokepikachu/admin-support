@@ -34,6 +34,9 @@ router = Router()
 
 PAGE_SIZE = 5
 
+# Shared filter for admin group
+_IN_ADMIN = F.chat.id == settings.ADMIN_GROUP_ID
+
 
 # ── FSM States ────────────────────────────────────────────────────────────────
 
@@ -50,7 +53,7 @@ class EditReport(StatesGroup):
 
 # ── /reportgen ────────────────────────────────────────────────────────────────
 
-@router.message(Command("reportgen"), F.chat.id == settings.ADMIN_GROUP_ID)
+@router.message(Command("reportgen"), _IN_ADMIN)
 async def cmd_reportgen(msg: Message) -> None:
     await msg.answer(
         "🛠 <b>Report Link Generator</b>\n\nChoose an action:",
@@ -83,7 +86,7 @@ async def rgen_create_start(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.message(CreateReport.title, F.chat.id == settings.ADMIN_GROUP_ID)
+@router.message(CreateReport.title, _IN_ADMIN, F.text)
 async def rgen_got_title(msg: Message, state: FSMContext) -> None:
     await state.update_data(title=msg.text.strip())
     await state.set_state(CreateReport.prompt_msg)
@@ -94,7 +97,7 @@ async def rgen_got_title(msg: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(CreateReport.prompt_msg, F.chat.id == settings.ADMIN_GROUP_ID)
+@router.message(CreateReport.prompt_msg, _IN_ADMIN, F.text)
 async def rgen_got_prompt(msg: Message, state: FSMContext) -> None:
     await state.update_data(prompt_msg=msg.text.strip())
     await state.set_state(CreateReport.invalid_msg)
@@ -105,7 +108,7 @@ async def rgen_got_prompt(msg: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(CreateReport.invalid_msg, F.chat.id == settings.ADMIN_GROUP_ID)
+@router.message(CreateReport.invalid_msg, _IN_ADMIN, F.text)
 async def rgen_got_invalid(msg: Message, state: FSMContext) -> None:
     await state.update_data(invalid_msg=msg.text.strip())
     await state.set_state(CreateReport.done_msg)
@@ -116,24 +119,28 @@ async def rgen_got_invalid(msg: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(CreateReport.done_msg, F.chat.id == settings.ADMIN_GROUP_ID)
+@router.message(CreateReport.done_msg, _IN_ADMIN, F.text)
 async def rgen_got_done(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.clear()
-    template = await create_template(
-        title=data["title"],
-        prompt_msg=data["prompt_msg"],
-        invalid_msg=data["invalid_msg"],
-        done_msg=data["done_msg"],
-    )
-    bot_info = await msg.bot.get_me()
-    deep_link = f"https://t.me/{bot_info.username}?start=report_{template['slug']}"
-    await msg.answer(
-        f"✅ <b>Report link created!</b>\n\n"
-        f"<b>Title:</b> {template['title']}\n\n"
-        f"<b>Deep link:</b>\n<code>{deep_link}</code>\n\n"
-        "Share this link with users to let them submit reports."
-    )
+    try:
+        template = await create_template(
+            title=data["title"],
+            prompt_msg=data["prompt_msg"],
+            invalid_msg=data["invalid_msg"],
+            done_msg=data["done_msg"],
+        )
+        bot_info = await msg.bot.get_me()
+        deep_link = f"https://t.me/{bot_info.username}?start=report_{template['slug']}"
+        await msg.answer(
+            f"✅ <b>Report link created!</b>\n\n"
+            f"<b>Title:</b> {template['title']}\n\n"
+            f"<b>Deep link:</b>\n<code>{deep_link}</code>\n\n"
+            "Share this link with users to let them submit reports."
+        )
+    except Exception as exc:
+        logger.error("Failed to create report template: %s", exc)
+        await msg.answer(f"❌ Failed to save report template: {exc}")
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -276,22 +283,30 @@ async def rgen_edit_field_prompt(cb: CallbackQuery, state: FSMContext) -> None:
     tid, field = parts[2], parts[3]
     await state.set_state(EditReport.new_value)
     await state.update_data(edit_tid=tid, edit_field=field)
-    labels = {"title": "Title", "prompt_msg": "Prompt message",
-              "invalid_msg": "Invalid message", "done_msg": "Done message"}
+    labels = {
+        "title": "Title",
+        "prompt_msg": "Prompt message",
+        "invalid_msg": "Invalid message",
+        "done_msg": "Done message",
+    }
     await cb.message.edit_text(
         f"✏️ Send the new value for <b>{labels.get(field, field)}</b>:"
     )
     await cb.answer()
 
 
-@router.message(EditReport.new_value, F.chat.id == settings.ADMIN_GROUP_ID)
+@router.message(EditReport.new_value, _IN_ADMIN, F.text)
 async def rgen_edit_save(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.clear()
-    if await update_template(data["edit_tid"], {data["edit_field"]: msg.text.strip()}):
-        await msg.answer(f"✅ Field updated.")
-    else:
-        await msg.answer("❌ Update failed.")
+    try:
+        if await update_template(data["edit_tid"], {data["edit_field"]: msg.text.strip()}):
+            await msg.answer("✅ Field updated.")
+        else:
+            await msg.answer("❌ Update failed — template not found.")
+    except Exception as exc:
+        logger.error("Failed to update template: %s", exc)
+        await msg.answer(f"❌ Error: {exc}")
 
 
 # ── Back ──────────────────────────────────────────────────────────────────────
