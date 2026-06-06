@@ -1,0 +1,24 @@
+services:
+  - type: worker          # background worker (no open port needed for long polling)
+    name: support-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_GROUP_ID
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: DB_NAME
+        value: supportbot
+      - key: RATE_LIMIT_MESSAGES
+        value: "5"
+      - key: RATE_LIMIT_WINDOW
+        value: "60"
+      - key: RATE_LIMIT_COOLDOWN
+        value: "300"
+      - key: PYTHON_VERSION
+        value: "3.11.0"
