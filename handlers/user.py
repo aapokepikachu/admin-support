@@ -16,7 +16,6 @@ from services.user_service import upsert_user
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Scope this router to private chats only
 router.message.filter(F.chat.type == "private")
 
 
@@ -25,7 +24,6 @@ async def cmd_start(msg: Message) -> None:
     user = msg.from_user
     await upsert_user(user)
 
-    # Deep-link: /start report_<slug>
     args = msg.text.split(maxsplit=1)
     if len(args) > 1 and args[1].startswith("report_"):
         slug = args[1][len("report_"):]
@@ -71,22 +69,35 @@ async def cmd_report(msg: Message) -> None:
     channels = await list_channels()
     if not channels:
         await msg.answer(
-            "ℹ️ No authorised channels are configured yet.\n"
-            "Ask an admin to add channels with /setchannel.\n\n"
-            "Alternatively, use a report deep-link provided by the support team."
+            "ℹ️ No authorised channels configured yet.\n"
+            "Ask an admin to add channels with /setchannel, or use a report "
+            "deep-link provided by the support team."
         )
         return
+    # Show channels as hyperlinks, not raw IDs
     lines = "\n".join(
-        f"• {c['title']} (<code>{c['channel_id']}</code>)" for c in channels
+        f"• <a href='https://t.me/c/{str(c['channel_id']).lstrip('-100')}/1'>{c['title']}</a>"
+        for c in channels
     )
     await msg.answer(
         "🔗 <b>Report a broken link</b>\n\n"
-        "This command is for reference only. Use the report deep-link shared by admins to submit a report.\n\n"
-        f"<b>Authorised channels:</b>\n{lines}"
+        "Use the report deep-link provided by the support team to submit a report.\n\n"
+        f"<b>Authorised channels:</b>\n{lines}",
+        disable_web_page_preview=True,
     )
 
 
-# ── Message forwarding (all content types) ────────────────────────────────────
+# ── Block forwarded messages ──────────────────────────────────────────────────
+
+@router.message(F.forward_origin | F.forward_from | F.forward_from_chat)
+async def block_forwards(msg: Message) -> None:
+    await msg.answer(
+        "⚠️ Forwarded messages are not accepted.\n"
+        "Please type your message directly."
+    )
+
+
+# ── Message forwarding ────────────────────────────────────────────────────────
 
 @router.message(F.text | F.photo | F.video | F.document | F.audio | F.voice | F.sticker | F.animation)
 async def forward_to_admin(msg: Message) -> None:
