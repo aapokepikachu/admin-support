@@ -22,42 +22,6 @@ router = Router()
 router.message.filter(F.chat.id == settings.ADMIN_GROUP_ID)
 
 
-# ── Reply routing: admin → user ───────────────────────────────────────────────
-
-@router.message(F.reply_to_message)
-async def admin_reply_to_user(msg: Message, bot: Bot) -> None:
-    # Let command handlers take priority
-    if msg.text and msg.text.startswith("/"):
-        return
-
-    replied = msg.reply_to_message
-    if replied is None:
-        return
-
-    mapping = await get_mapping_by_admin_msg(replied.message_id)
-    if mapping is None:
-        return  # Not a forwarded user message — ignore silently
-
-    user_id: int = mapping["user_id"]
-    try:
-        await bot.copy_message(
-            chat_id=user_id,
-            from_chat_id=msg.chat.id,
-            message_id=msg.message_id,
-        )
-    except Exception as exc:
-        err = str(exc).lower()
-        if "bot was blocked" in err or "user is deactivated" in err:
-            await mark_deleted(user_id)
-            await msg.reply(
-                f"⚠️ Could not deliver: user <code>{user_id}</code> has blocked "
-                "the bot or deleted their account."
-            )
-        else:
-            logger.error("Reply delivery failed for user %d: %s", user_id, exc)
-            await msg.reply(f"❌ Delivery failed: {exc}")
-
-
 # ── /helpa ────────────────────────────────────────────────────────────────────
 
 @router.message(Command("helpa"))
@@ -253,8 +217,7 @@ async def cmd_setchannel(msg: Message) -> None:
         channel_id = parse_channel_id(raw_id)
         if channel_id is None:
             await msg.reply(
-                "❌ Invalid ID. Please use the numeric channel ID (e.g. <code>-1001234567890</code>).\n"
-                "t.me links cannot be resolved without an API call — use the raw ID."
+                "❌ Invalid ID. Use the numeric channel ID (e.g. <code>-1001234567890</code>)."
             )
             return
         await add_channel(channel_id, title)
@@ -292,10 +255,40 @@ async def cmd_captcha(msg: Message) -> None:
     await msg.reply(f"✅ Captcha turned <b>{'on' if enable else 'off'}</b>.")
 
 
+# ── Reply routing: admin → user ───────────────────────────────────────────────
+# IMPORTANT: registered LAST so all command handlers above take priority.
+# Uses explicit ~F.text.startswith("/") filter to never match commands.
+
+@router.message(F.reply_to_message & ~F.text.startswith("/"))
+async def admin_reply_to_user(msg: Message, bot: Bot) -> None:
+    replied = msg.reply_to_message
+    mapping = await get_mapping_by_admin_msg(replied.message_id)
+    if mapping is None:
+        return  # Not a forwarded user message — ignore silently
+
+    user_id: int = mapping["user_id"]
+    try:
+        await bot.copy_message(
+            chat_id=user_id,
+            from_chat_id=msg.chat.id,
+            message_id=msg.message_id,
+        )
+    except Exception as exc:
+        err = str(exc).lower()
+        if "bot was blocked" in err or "user is deactivated" in err:
+            await mark_deleted(user_id)
+            await msg.reply(
+                f"⚠️ Could not deliver: user <code>{user_id}</code> has blocked "
+                "the bot or deleted their account."
+            )
+        else:
+            logger.error("Reply delivery failed for user %d: %s", user_id, exc)
+            await msg.reply(f"❌ Delivery failed: {exc}")
+
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 async def _resolve_target(msg: Message) -> int | None:
-    """Return the target user_id from a reply chain."""
     if not msg.reply_to_message:
         return None
     mapping = await get_mapping_by_admin_msg(msg.reply_to_message.message_id)

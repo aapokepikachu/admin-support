@@ -1,3 +1,4 @@
+import hashlib
 import os
 from dataclasses import dataclass, field
 
@@ -20,7 +21,6 @@ class Settings:
     DB_NAME: str = field(default_factory=lambda: os.getenv("DB_NAME", "supportbot"))
     PORT: int = field(default_factory=lambda: int(os.getenv("PORT", "8000")))
 
-    # Rate limiting
     RATE_LIMIT_MESSAGES: int = field(
         default_factory=lambda: int(os.getenv("RATE_LIMIT_MESSAGES", "5"))
     )
@@ -33,8 +33,10 @@ class Settings:
 
     @property
     def WEBHOOK_PATH(self) -> str:
-        # Use the token as a secret path so random pings don't trigger updates
-        return f"/webhook/{self.BOT_TOKEN}"
+        # Hash the token so the path contains no special characters (no colons)
+        # and is still secret and unique per bot
+        token_hash = hashlib.sha256(self.BOT_TOKEN.encode()).hexdigest()[:32]
+        return f"/webhook/{token_hash}"
 
     @property
     def WEBHOOK_URL(self) -> str:

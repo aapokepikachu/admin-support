@@ -21,19 +21,41 @@ logger = logging.getLogger(__name__)
 
 
 async def health(request: web.Request) -> web.Response:
-    """
-    Root health-check — handles GET and HEAD on both / and /health.
-    UptimeRobot sends HEAD / so this route is critical.
-    aiohttp automatically handles HEAD for any GET route (returns headers only, no body).
-    """
+    """Handles GET and HEAD on / and /health. UptimeRobot pings HEAD /."""
     return web.Response(text="ok", status=200)
 
 
-async def on_startup(bot: Bot) -> None:
+async def setup_webhook(request: web.Request) -> web.Response:
+    """
+    Manual webhook reset endpoint — call this if the bot stops responding.
+    GET https://your-app.onrender.com/setup
+    """
+    bot: Bot = request.app["bot"]
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_webhook(
+            url=settings.WEBHOOK_URL,
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "my_chat_member"],
+        )
+        info = await bot.get_webhook_info()
+        return web.json_response({
+            "status": "ok",
+            "webhook_url": info.url,
+            "pending": info.pending_update_count,
+            "last_error": info.last_error_message,
+        })
+    except Exception as exc:
+        logger.error("Webhook reset failed: %s", exc)
+        return web.json_response({"status": "error", "detail": str(exc)}, status=500)
+
+
+async def on_startup(bot: Bot, app: web.Application) -> None:
     await init_db()
 
-    wh_info = await bot.get_webhook_info()
-    logger.info("Webhook before set: url=%r pending=%d", wh_info.url, wh_info.pending_update_count)
+    # Always delete first to clear any stale webhook state from Telegram
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Old webhook deleted.")
 
     await bot.set_webhook(
         url=settings.WEBHOOK_URL,
@@ -41,15 +63,18 @@ async def on_startup(bot: Bot) -> None:
         allowed_updates=["message", "callback_query", "my_chat_member"],
     )
 
-    wh_info = await bot.get_webhook_info()
-    logger.info("Webhook set confirmed: url=%r", wh_info.url)
-    logger.info("Bot is live. WEBHOOK_HOST=%s", settings.WEBHOOK_HOST)
+    info = await bot.get_webhook_info()
+    logger.info("Webhook set: url=%r pending=%d last_error=%r",
+                info.url, info.pending_update_count, info.last_error_message)
+
+    # Store bot on app for the /setup endpoint
+    app["bot"] = bot
 
 
 async def on_shutdown(bot: Bot) -> None:
     await bot.delete_webhook()
     await close_db()
-    logger.info("Webhook removed, DB closed.")
+    logger.info("Shutdown complete.")
 
 
 def build_app() -> web.Application:
@@ -60,7 +85,13 @@ def build_app() -> web.Application:
 
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.startup.register(on_startup)
+    # Pass app to startup so we can store bot reference
+    app = web.Application()
+
+    async def _startup(bot: Bot = bot) -> None:
+        await on_startup(bot, app)
+
+    dp.startup.register(_startup)
     dp.shutdown.register(on_shutdown)
 
     dp.message.middleware(RateLimitMiddleware())
@@ -72,11 +103,12 @@ def build_app() -> web.Application:
     dp.include_router(admin.router)
     dp.include_router(report.router)
 
-    app = web.Application()
-
-    # GET / and GET /health — aiohttp auto-serves HEAD for all GET routes
+    # Health routes — GET also auto-serves HEAD in aiohttp
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+
+    # Manual webhook reset (useful if bot stops responding)
+    app.router.add_get("/setup", setup_webhook)
 
     # Telegram webhook
     SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=settings.WEBHOOK_PATH)
