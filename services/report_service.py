@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from bson import ObjectId
@@ -24,7 +24,7 @@ async def create_template(
         "prompt_msg": prompt_msg,
         "invalid_msg": invalid_msg,
         "done_msg": done_msg,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.utcnow(),
     }
     result = await get_db().report_templates.insert_one(doc)
     doc["_id"] = result.inserted_id
@@ -93,7 +93,7 @@ async def create_report_state(user_id: int, template_id: str) -> None:
         {
             "$set": {
                 "status": "pending",
-                "submitted_at": datetime.now(timezone.utc),
+                "submitted_at": datetime.utcnow(),
                 "admin_msg_id": None,
             }
         },
@@ -104,7 +104,7 @@ async def create_report_state(user_id: int, template_id: str) -> None:
 async def resolve_report_state(user_id: int, template_id: str, status: str) -> None:
     await get_db().report_states.update_one(
         {"user_id": user_id, "template_id": ObjectId(template_id)},
-        {"$set": {"status": status, "resolved_at": datetime.now(timezone.utc)}},
+        {"$set": {"status": status, "resolved_at": datetime.utcnow()}},
     )
 
 

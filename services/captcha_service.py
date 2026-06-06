@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from db import get_db
@@ -46,7 +46,7 @@ async def create_captcha_session(user_id: int) -> dict[str, Any]:
         "question": question,
         "answer": answer,
         "options": options,
-        "created_at": datetime.now(timezone.utc),
+        "created_at": datetime.utcnow(),
     }
     await get_db().captcha_sessions.replace_one({"user_id": user_id}, doc, upsert=True)
     return doc

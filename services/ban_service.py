@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from db import get_db
@@ -14,7 +14,7 @@ async def ban_user(user_id: int, banned_by: int) -> None:
             "$set": {
                 "user_id": user_id,
                 "banned_by": banned_by,
-                "banned_at": datetime.now(timezone.utc),
+                "banned_at": datetime.utcnow(),
             }
         },
         upsert=True,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from db import get_db
@@ -13,7 +13,7 @@ async def save_mapping(user_id: int, user_msg_id: int, admin_msg_id: int) -> Non
             "user_id": user_id,
             "user_msg_id": user_msg_id,
             "admin_msg_id": admin_msg_id,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": datetime.utcnow(),
         }
     )
 

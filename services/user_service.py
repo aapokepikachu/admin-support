@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from aiogram.types import User as TgUser
@@ -17,12 +17,12 @@ async def upsert_user(tg_user: TgUser) -> None:
                 "username": tg_user.username,
                 "first_name": tg_user.first_name,
                 "last_name": tg_user.last_name,
-                "last_seen": datetime.now(timezone.utc),
+                "last_seen": datetime.utcnow(),
                 "is_deleted": False,
             },
             "$setOnInsert": {
                 "user_id": tg_user.id,
-                "joined_at": datetime.now(timezone.utc),
+                "joined_at": datetime.utcnow(),
                 "status": "active",
             },
         },
