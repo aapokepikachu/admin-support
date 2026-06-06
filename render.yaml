@@ -24,5 +24,6 @@ services:
       - key: RATE_LIMIT_COOLDOWN
         value: "300"
       - key: PYTHON_VERSION
-        value: "3.11.0"
+        value: "3.11.11"
       # PORT is injected automatically by Render — do not set it here
+# Python version is also pinned via .python-version file in the repo root

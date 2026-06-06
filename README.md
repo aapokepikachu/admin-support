@@ -224,6 +224,10 @@ ngrok http 8000
 > The free tier only covers **Web Services** and static sites.  
 > This bot runs as a webhook server (aiohttp), which is a web service — exactly what the free tier provides.
 
+> **Why is Python 3.11 pinned?**  
+> Render currently defaults to Python 3.14. `pydantic-core` (required by aiogram) has no prebuilt wheel for 3.14 and must compile from Rust — which fails on Render's read-only filesystem.  
+> The repo contains a `.python-version` file (`3.11.11`) and `render.yaml` sets `PYTHON_VERSION=3.11.11`. Both are required; together they force Render to use Python 3.11 where all dependencies have prebuilt wheels.
+
 ### Step 1 — MongoDB Atlas (free M0)
 
 1. Go to [cloud.mongodb.com](https://cloud.mongodb.com) → create a free account.
