@@ -17,6 +17,13 @@ async def init_db() -> None:
     logger.info("MongoDB connected: %s", settings.DB_NAME)
 
 
+async def close_db() -> None:
+    global _client
+    if _client:
+        _client.close()
+        _client = None
+
+
 async def _ensure_indexes() -> None:
     db = get_db()
     await db.users.create_index("user_id", unique=True)
@@ -29,6 +36,7 @@ async def _ensure_indexes() -> None:
     await db.allowed_channels.create_index("channel_id", unique=True)
     await db.rate_limit.create_index("user_id", unique=True)
     await db.captcha_sessions.create_index("user_id", unique=True)
+    await db.settings.create_index("key", unique=True)
 
 
 def get_db() -> AsyncIOMotorDatabase:

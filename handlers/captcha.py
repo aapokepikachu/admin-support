@@ -20,7 +20,7 @@ async def captcha_answer(callback: CallbackQuery) -> None:
 
     session = await get_pending_captcha(user.id)
     if session is None:
-        await callback.answer("Session expired. Please send a message again.", show_alert=True)
+        await callback.answer("Session expired. Send a message to get a new captcha.", show_alert=True)
         return
 
     if answer == session["answer"]:

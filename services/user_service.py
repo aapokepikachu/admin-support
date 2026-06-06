@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from aiogram.types import User as TgUser
 
 from db import get_db
-
-logger = logging.getLogger(__name__)
 
 
 async def upsert_user(tg_user: TgUser) -> None:

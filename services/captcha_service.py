@@ -37,7 +37,9 @@ async def get_pending_captcha(user_id: int) -> dict[str, Any] | None:
 
 async def create_captcha_session(user_id: int) -> dict[str, Any]:
     question, answer, pool = random.choice(_CHALLENGES)
-    options = list({answer} | set(random.sample([o for o in pool if o != answer], min(4, len(pool) - 1))))
+    # Build 5 unique options always containing the correct answer
+    wrong = [o for o in pool if o != answer]
+    options = [answer] + random.sample(wrong, min(4, len(wrong)))
     random.shuffle(options)
     doc = {
         "user_id": user_id,

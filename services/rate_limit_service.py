@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import settings
 from db import get_db
@@ -9,8 +9,8 @@ from db import get_db
 async def check_rate_limit(user_id: int) -> tuple[bool, int]:
     """
     Returns (allowed, retry_after_seconds).
-    allowed=True  → message may proceed
-    allowed=False → user is throttled; retry_after > 0
+    allowed=True  → message may proceed.
+    allowed=False → user is throttled; retry_after > 0.
     """
     db = get_db()
     now = datetime.now(timezone.utc)
@@ -32,11 +32,10 @@ async def check_rate_limit(user_id: int) -> tuple[bool, int]:
         remaining = int((doc["throttled_until"] - now).total_seconds())
         return False, remaining
 
-    window_start: datetime = doc["window_start"]
-    elapsed = (now - window_start).total_seconds()
+    elapsed = (now - doc["window_start"]).total_seconds()
 
     if elapsed > settings.RATE_LIMIT_WINDOW:
-        # Reset window
+        # New window — reset counter
         await db.rate_limit.update_one(
             {"user_id": user_id},
             {"$set": {"count": 1, "window_start": now, "throttled_until": None}},
@@ -45,8 +44,6 @@ async def check_rate_limit(user_id: int) -> tuple[bool, int]:
 
     count: int = doc["count"] + 1
     if count > settings.RATE_LIMIT_MESSAGES:
-        from datetime import timedelta
-
         throttled_until = now + timedelta(seconds=settings.RATE_LIMIT_COOLDOWN)
         await db.rate_limit.update_one(
             {"user_id": user_id},
@@ -54,7 +51,5 @@ async def check_rate_limit(user_id: int) -> tuple[bool, int]:
         )
         return False, settings.RATE_LIMIT_COOLDOWN
 
-    await db.rate_limit.update_one(
-        {"user_id": user_id}, {"$set": {"count": count}}
-    )
+    await db.rate_limit.update_one({"user_id": user_id}, {"$set": {"count": count}})
     return True, 0

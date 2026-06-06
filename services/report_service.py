@@ -9,7 +9,7 @@ from bson import ObjectId
 from db import get_db
 
 
-# ── Template CRUD ─────────────────────────────────────────────────────────────
+# ── Templates ─────────────────────────────────────────────────────────────────
 
 async def create_template(
     title: str,
@@ -76,7 +76,7 @@ async def delete_template(template_id: str) -> bool:
         return False
 
 
-# ── Report state ──────────────────────────────────────────────────────────────
+# ── Report states ─────────────────────────────────────────────────────────────
 
 async def get_report_state(user_id: int, template_id: str) -> dict[str, Any] | None:
     try:
@@ -88,9 +88,8 @@ async def get_report_state(user_id: int, template_id: str) -> dict[str, Any] | N
 
 
 async def create_report_state(user_id: int, template_id: str) -> None:
-    from bson import ObjectId as OId
     await get_db().report_states.update_one(
-        {"user_id": user_id, "template_id": OId(template_id)},
+        {"user_id": user_id, "template_id": ObjectId(template_id)},
         {
             "$set": {
                 "status": "pending",
@@ -103,19 +102,15 @@ async def create_report_state(user_id: int, template_id: str) -> None:
 
 
 async def resolve_report_state(user_id: int, template_id: str, status: str) -> None:
-    from bson import ObjectId as OId
     await get_db().report_states.update_one(
-        {"user_id": user_id, "template_id": OId(template_id)},
+        {"user_id": user_id, "template_id": ObjectId(template_id)},
         {"$set": {"status": status, "resolved_at": datetime.now(timezone.utc)}},
     )
 
 
-async def save_report_admin_msg(
-    user_id: int, template_id: str, admin_msg_id: int
-) -> None:
-    from bson import ObjectId as OId
+async def save_report_admin_msg(user_id: int, template_id: str, admin_msg_id: int) -> None:
     await get_db().report_states.update_one(
-        {"user_id": user_id, "template_id": OId(template_id)},
+        {"user_id": user_id, "template_id": ObjectId(template_id)},
         {"$set": {"admin_msg_id": admin_msg_id}},
     )
 

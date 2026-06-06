@@ -1,65 +1,88 @@
-# Support Relay Bot
+# admin-support
 
-A production-ready Telegram support bot that relays private user messages to an admin group and routes admin replies back to users.
+A production-ready Telegram support-relay bot.  
+Users message the bot privately → messages are forwarded to an admin group → admin replies route back to users.
 
-Built with **Python 3.11 · aiogram v3 · Motor (async MongoDB)**.  
-Designed to run on **Render free tier** + **MongoDB Atlas free tier (512 MB)**.
+**Stack:** Python 3.11 · aiogram v3 · aiohttp webhook server · Motor (async MongoDB)  
+**Hosting:** Render **free Web Service** + MongoDB Atlas **free M0 cluster**
+
+---
+
+## How it works
+
+```
+User (private chat)          Bot (Render Web Service)        Admin Group
+       │                              │                            │
+       │── any message ──────────────►│                            │
+       │                              │── msg.forward() ──────────►│  ← true forward
+       │                              │   [mapping saved to DB]    │    admins see sender
+       │                              │                            │
+       │                              │◄── reply to forwarded ─────│
+       │◄─ bot.copy_message() ────────│                            │
+       │   (admin reply delivered)    │                            │
+```
+
+1. User sends any message in private chat.
+2. Bot calls `msg.forward()` to the admin group — a **true Telegram forward**, so admins see the original sender's name and avatar.
+3. The forwarded message's ID is stored in MongoDB alongside the user's ID.
+4. When an admin **replies** to that forwarded message, the bot looks up the mapping, finds the user, and delivers the reply via `bot.copy_message()`.
+5. Admin-only messages (not replies to forwarded messages) are ignored — no double-forwarding, no leaking internal discussion.
 
 ---
 
 ## Features
 
-| Category | Details |
+| Feature | Details |
 |---|---|
-| **Relay** | Forwards user messages to admin group via true Telegram forward (preserves sender metadata). Admin replies are routed back to the user. |
-| **Anti-spam** | Configurable rate limiting: N messages per window, then a cooldown block. |
-| **Captcha** | Optional inline captcha for new users before their first message. |
-| **Ban system** | `/ban`, `/unban`, `/banlist` — all members of the admin group can moderate. |
-| **Broadcast** | Send a message to all non-deleted users at once. |
-| **Report links** | Deep-link report flow with admin-defined prompts, Done/Invalid inline buttons, and anti-spam state tracking. |
-| **Group guard** | Bot auto-leaves any group that is not the configured admin group. |
-| **Allowed channels** | Admins whitelist channels/groups; `/report` links only validate against those. |
+| Message relay | True forward (preserves sender metadata) + reply routing back to user |
+| Anti-spam | Configurable rate limit: N messages / window, then cooldown block |
+| Captcha | Optional inline button captcha for new users; toggled by admins |
+| Ban system | `/ban`, `/unban`, `/banlist` — usable by all admin group members |
+| Broadcast | Send a message to all non-deleted users |
+| Report deep-links | Admin-created report templates with Proceed/Cancel, Done/Invalid flows |
+| Allowed channels | Whitelist for `/report` link validation |
+| Group guard | Bot auto-leaves any group that is not the configured admin group |
 
 ---
 
-## Project Structure
+## Project structure
 
 ```
-tgbot/
-├── main.py                  # Entry point — bot + dispatcher setup
-├── config.py                # Settings loaded from env vars
-├── db.py                    # Motor client, index creation
+admin-support/
+├── main.py                      # aiohttp webhook server + bot wiring
+├── config.py                    # Typed settings loaded from env vars
+├── db.py                        # Motor client, startup, index creation
 ├── requirements.txt
-├── render.yaml              # Render deployment manifest
+├── render.yaml                  # Render web service manifest
 ├── .env.example
 │
 ├── handlers/
-│   ├── user.py              # /start /help /ping /report + message forwarding
-│   ├── admin.py             # All admin group commands + reply routing
-│   ├── report.py            # /reportgen FSM + report proceed/cancel/done/invalid
-│   ├── captcha.py           # Captcha callback answer handler
-│   └── group_guard.py       # Auto-leave foreign groups
+│   ├── user.py                  # /start /help /ping /report + message forwarding
+│   ├── admin.py                 # Admin commands + reply-to-user routing
+│   ├── report.py                # /reportgen FSM + all report callbacks
+│   ├── captcha.py               # Captcha callback answer handler
+│   └── group_guard.py           # Auto-leave non-admin groups
 │
 ├── middlewares/
-│   ├── rate_limit.py        # Per-user message rate limiting
-│   └── captcha.py           # Blocks messages until captcha solved
+│   ├── rate_limit.py            # Ban check + rate limiting (runs before captcha)
+│   └── captcha.py               # Blocks messages until captcha is solved
 │
-├── services/
-│   ├── user_service.py      # User CRUD
-│   ├── ban_service.py       # Ban / unban / check
-│   ├── message_map_service.py  # Forward→user mapping
-│   ├── rate_limit_service.py   # Rate limit state
-│   ├── captcha_service.py   # Captcha sessions + enable/disable
-│   ├── channel_service.py   # Allowed channel list
-│   └── report_service.py    # Report templates + states
+├── services/                    # Pure DB logic — no Telegram types
+│   ├── user_service.py
+│   ├── ban_service.py
+│   ├── message_map_service.py
+│   ├── rate_limit_service.py
+│   ├── captcha_service.py
+│   ├── channel_service.py
+│   └── report_service.py
 │
 └── utils/
-    └── tg_helpers.py        # user_mention, extract_channel_id_from_link
+    └── helpers.py               # parse_channel_id
 ```
 
 ---
 
-## MongoDB Schema
+## MongoDB schema
 
 ### `users`
 ```json
@@ -68,8 +91,8 @@ tgbot/
   "username": "johndoe",
   "first_name": "John",
   "last_name": "Doe",
-  "joined_at": "ISODate",
-  "last_seen": "ISODate",
+  "joined_at": "<ISODate>",
+  "last_seen": "<ISODate>",
   "status": "active | banned | deleted",
   "is_deleted": false,
   "captcha_passed": true
@@ -78,26 +101,26 @@ tgbot/
 
 ### `bans`
 ```json
-{ "user_id": 123456789, "banned_by": 987654321, "banned_at": "ISODate" }
+{ "user_id": 123456789, "banned_by": 987654321, "banned_at": "<ISODate>" }
 ```
 
 ### `message_map`
+Indexed on `admin_msg_id` for O(1) reply routing.
 ```json
 {
   "user_id": 123456789,
   "user_msg_id": 42,
   "admin_msg_id": 101,
-  "created_at": "ISODate"
+  "created_at": "<ISODate>"
 }
 ```
-> Indexed on `admin_msg_id` for O(1) reply routing.
 
 ### `rate_limit`
 ```json
 {
   "user_id": 123456789,
   "count": 3,
-  "window_start": "ISODate",
+  "window_start": "<ISODate>",
   "throttled_until": null
 }
 ```
@@ -108,8 +131,8 @@ tgbot/
   "user_id": 123456789,
   "question": "What is 3 + 4?",
   "answer": "7",
-  "options": ["5","6","7","8","9"],
-  "created_at": "ISODate"
+  "options": ["5", "6", "7", "8", "9"],
+  "created_at": "<ISODate>"
 }
 ```
 
@@ -121,13 +144,13 @@ tgbot/
 ### `report_templates`
 ```json
 {
-  "_id": "ObjectId",
+  "_id": "<ObjectId>",
   "title": "Hoppa link",
   "slug": "abc12345",
   "prompt_msg": "Do you want to report that Movie Hoppa is not working?",
   "invalid_msg": "The Movie Hoppa link is working fine.",
   "done_msg": "The movie link has been fixed.",
-  "created_at": "ISODate"
+  "created_at": "<ISODate>"
 }
 ```
 
@@ -135,11 +158,11 @@ tgbot/
 ```json
 {
   "user_id": 123456789,
-  "template_id": "ObjectId",
+  "template_id": "<ObjectId>",
   "status": "pending | done | invalid",
   "admin_msg_id": 202,
-  "submitted_at": "ISODate",
-  "resolved_at": "ISODate"
+  "submitted_at": "<ISODate>",
+  "resolved_at": "<ISODate>"
 }
 ```
 
@@ -150,99 +173,167 @@ tgbot/
 
 ---
 
-## Environment Variables
+## Environment variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `BOT_TOKEN` | ✅ | — | BotFather token |
-| `ADMIN_GROUP_ID` | ✅ | — | Integer ID of admin supergroup (e.g. `-1001234567890`) |
+| `ADMIN_GROUP_ID` | ✅ | — | Integer ID of the admin supergroup, e.g. `-1001234567890` |
 | `MONGO_URI` | ✅ | — | MongoDB Atlas connection string |
+| `WEBHOOK_HOST` | ✅ | — | Your Render HTTPS URL, e.g. `https://admin-support.onrender.com` |
 | `DB_NAME` | ❌ | `supportbot` | MongoDB database name |
-| `RATE_LIMIT_MESSAGES` | ❌ | `5` | Max messages per window |
-| `RATE_LIMIT_WINDOW` | ❌ | `60` | Window size in seconds |
-| `RATE_LIMIT_COOLDOWN` | ❌ | `300` | Cooldown duration in seconds after exceeding limit |
+| `PORT` | ❌ | `8000` | Injected automatically by Render — do not set manually |
+| `RATE_LIMIT_MESSAGES` | ❌ | `5` | Max messages allowed per window |
+| `RATE_LIMIT_WINDOW` | ❌ | `60` | Window duration in seconds |
+| `RATE_LIMIT_COOLDOWN` | ❌ | `300` | Cooldown block duration in seconds |
 
 ---
 
-## Local Setup
+## Local setup
 
 ```bash
 git clone <your-repo>
-cd tgbot
+cd admin-support
 
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env with your real values
+# Fill in BOT_TOKEN, ADMIN_GROUP_ID, MONGO_URI
+# For local testing, set WEBHOOK_HOST to an ngrok URL (see below)
 
 python main.py
 ```
 
----
+### Local webhook with ngrok
+Telegram requires a public HTTPS URL. Use [ngrok](https://ngrok.com/) for local testing:
 
-## Render Deployment
-
-1. **Create a MongoDB Atlas account** → New Project → Free M0 cluster.  
-   - Create a DB user and allow access from `0.0.0.0/0` (required for Render's dynamic IPs).  
-   - Copy the connection string into `MONGO_URI`.
-
-2. **Push your code** to a GitHub/GitLab repository.
-
-3. **Create a new Render service**:
-   - Dashboard → *New* → *Background Worker*
-   - Connect your repository
-   - Runtime: **Python 3**
-   - Build command: `pip install -r requirements.txt`
-   - Start command: `python main.py`
-   - Plan: **Free**
-
-4. **Add environment variables** in Render's dashboard (or let `render.yaml` pre-fill them — you'll still need to set secret values manually).
-
-5. Deploy. The bot uses **long polling** — no port or inbound network is needed, making it ideal for Render's free worker tier.
-
----
-
-## Getting the Admin Group ID
-
-1. Add [@userinfobot](https://t.me/userinfobot) or [@RawDataBot](https://t.me/RawDataBot) to your admin group.
-2. It will print the group's integer ID, e.g. `-1001234567890`.
-3. Use that as `ADMIN_GROUP_ID`.
-
----
-
-## How the Forwarding / Reply System Works
-
-```
-User                       Bot                       Admin Group
- │                          │                              │
- │── "Hello, need help" ──► │                              │
- │                          │── forward(msg) ─────────────►│  [message_map saved]
- │                          │                              │
- │                          │◄─ reply to forwarded msg ────│
- │                          │   (admin types reply)        │
- │◄─ copy_message ──────────│                              │
- │   (bot delivers reply)   │                              │
+```bash
+ngrok http 8000
+# Copy the https://xxxx.ngrok.io URL into WEBHOOK_HOST in your .env
 ```
 
-1. **User → Bot**: The user sends any message in private chat. The bot calls `msg.forward(admin_group_id)` — this is a **true Telegram forward**, so admins see the original sender's name, avatar, and "Forwarded from" header.
-2. **Mapping saved**: The forwarded message's `message_id` in the admin group is stored in `message_map` alongside the original `user_id`.
-3. **Admin → User**: When an admin **replies** to that forwarded message, the bot looks up `message_map` by the replied-to `message_id`, finds the user, and calls `bot.copy_message()` to deliver the reply. This prevents double-forwarding and keeps admin-internal messages private.
-4. **Loop prevention**: The admin reply handler only triggers on messages that are replies **and** whose reply-target exists in `message_map`. Plain admin messages are ignored.
+---
+
+## Render deployment (free Web Service)
+
+> **Why Web Service and not Background Worker?**  
+> Render's Background Worker tier is **paid** (starts at $7/month).  
+> The free tier only covers **Web Services** and static sites.  
+> This bot runs as a webhook server (aiohttp), which is a web service — exactly what the free tier provides.
+
+### Step 1 — MongoDB Atlas (free M0)
+
+1. Go to [cloud.mongodb.com](https://cloud.mongodb.com) → create a free account.
+2. Create a **free M0 cluster** (512 MB, shared).
+3. Under *Database Access* → add a user with read/write permissions.
+4. Under *Network Access* → add `0.0.0.0/0` (required because Render's IPs are dynamic).
+5. Click *Connect* → *Drivers* → copy the connection string.  
+   Replace `<password>` with your DB user's password.
+
+### Step 2 — Push code to GitHub
+
+```bash
+git init
+git add .
+git commit -m "initial commit"
+git remote add origin https://github.com/you/admin-support.git
+git push -u origin main
+```
+
+### Step 3 — Create Render Web Service
+
+1. Go to [dashboard.render.com](https://dashboard.render.com) → **New → Web Service**.
+2. Connect your GitHub repository.
+3. Settings:
+   - **Runtime:** Python 3
+   - **Build command:** `pip install -r requirements.txt`
+   - **Start command:** `python main.py`
+   - **Plan:** Free
+4. Add environment variables (under the *Environment* tab):
+
+   | Key | Value |
+   |---|---|
+   | `BOT_TOKEN` | your bot token |
+   | `ADMIN_GROUP_ID` | e.g. `-1001234567890` |
+   | `MONGO_URI` | your Atlas connection string |
+   | `WEBHOOK_HOST` | leave blank for now — see Step 4 |
+
+5. Click **Deploy**.
+
+### Step 4 — Set WEBHOOK_HOST
+
+After the first deploy, Render assigns your service a URL like `https://admin-support.onrender.com`.
+
+1. Copy that URL.
+2. Go to **Environment** in your Render dashboard.
+3. Add: `WEBHOOK_HOST` = `https://admin-support.onrender.com` (no trailing slash).
+4. Click **Save** — Render redeploys automatically.
+
+The bot will set the Telegram webhook on startup and is now live.
+
+### Step 5 — Keep the service awake (UptimeRobot)
+
+Render free web services **sleep after 15 minutes of inactivity**. The bot exposes a `/health` endpoint specifically to prevent this.
+
+1. Go to [uptimerobot.com](https://uptimerobot.com) → create a free account.
+2. **New Monitor** → HTTP(s).
+3. URL: `https://admin-support.onrender.com/health`
+4. Interval: **5 minutes**.
+5. Save.
+
+UptimeRobot pings `/health` every 5 minutes, keeping the service awake 24/7 at no cost.
 
 ---
 
-## Caveats & Free Tier Limitations
+## Getting the admin group ID
 
-| Limitation | Impact |
+1. Make your group a **supergroup** (Settings → Group type → Supergroup).
+2. Add [@RawDataBot](https://t.me/RawDataBot) to the group.
+3. It replies with the chat ID, e.g. `-1001234567890`.
+4. Use that value as `ADMIN_GROUP_ID`.
+
+---
+
+## User commands
+
+| Command | Description |
 |---|---|
-| **Render free worker sleeps after 15 min inactivity** | Long polling keeps the connection alive as long as the process is running; Render free workers do *not* sleep while the process is active — only web services sleep. Workers run continuously. ✅ |
-| **Render free tier: 512 MB RAM** | The bot uses ~40–80 MB under normal load. Safe. ✅ |
-| **MongoDB Atlas M0: 512 MB storage** | Sufficient for thousands of users. Monitor via `/db`. |
-| **MongoDB Atlas M0: 100 max connections** | Motor uses a connection pool; default is well within limits. ✅ |
-| **Broadcast may be slow** | Telegram rate-limits `sendMessage` to ~30 msg/s per bot. Large broadcasts will take time. No async flood control implemented by design (keeps memory low). |
-| **Message map grows unbounded** | Old mappings are never pruned. Add a TTL index on `created_at` (e.g. 30 days) if storage becomes a concern: `db.message_map.createIndex({"created_at":1},{expireAfterSeconds:2592000})` |
-| **No webhook** | Long polling is simpler and more reliable on free-tier workers with no static IP. |
-| **FSM storage** | aiogram's default FSM storage is in-memory. On Render free tier, the process may restart. If a restart happens mid-conversation (e.g. during `/reportgen` create flow), the FSM state is lost and the admin must restart the flow. For production, swap `MemoryStorage` for `MongoStorage` (aiogram-contrib). |
+| `/start` | Welcome message with relay explanation, rate-limit rules, and captcha notice |
+| `/help` | Brief list of user commands |
+| `/report` | Shows authorised channel list; actual reports are submitted via deep-links |
+| `/ping` | Replies with "Pong" and round-trip latency in ms |
+
+## Admin commands (admin group only, all members)
+
+| Command | Description |
+|---|---|
+| `/helpa` | List all admin commands |
+| `/ban` | Reply to a forwarded user message to ban that user |
+| `/unban <id or @username>` | Unban a user |
+| `/banlist` | List all banned users |
+| `/users` | List all registered users with status |
+| `/broadcast` | Reply to a message to broadcast it to all active users |
+| `/setchannel add <id> [title]` | Whitelist a channel for report validation |
+| `/setchannel remove <id>` | Remove a channel from the whitelist |
+| `/setchannel list` | Show all whitelisted channels |
+| `/reportgen` | Open the report link generator (Create / Edit / Delete) |
+| `/captcha on\|off` | Toggle captcha for new users |
+| `/db` | Show MongoDB health stats |
+
+---
+
+## Caveats and free-tier limitations
+
+| Limitation | Details |
+|---|---|
+| **Render free: 15-min sleep** | Mitigated by UptimeRobot pinging `/health` every 5 min. Without it, the bot stops responding when the service sleeps. |
+| **Render free: 512 MB RAM** | Bot uses ~40–80 MB under normal load. Well within limits. |
+| **Render free: cold start on first ping after sleep** | If UptimeRobot is set up, this should not happen in practice. |
+| **MongoDB Atlas M0: 512 MB storage** | Sufficient for thousands of users. Monitor with `/db`. Add a 30-day TTL index on `message_map.created_at` if storage becomes a concern. |
+| **MongoDB Atlas M0: shared cluster** | Occasional latency spikes possible. All DB calls are async so the bot stays responsive. |
+| **FSM in memory** | The `/reportgen` create/edit flow uses aiogram's in-memory FSM. If Render restarts the service (deploys, OOM), any in-progress flow is lost and the admin must restart it. For persistent FSM, swap `MemoryStorage` for a MongoDB-backed storage. |
+| **Broadcast rate** | Telegram limits bots to ~30 messages/second. Large broadcasts will take time; the bot does not implement flood-control delays by design to keep memory usage minimal. |
+| **t.me links in /setchannel** | t.me links cannot be resolved to a numeric ID without an extra API call. Use the raw numeric channel ID (e.g. `-1001234567890`) with `/setchannel add`. |

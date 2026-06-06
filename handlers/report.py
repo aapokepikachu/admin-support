@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -20,7 +19,6 @@ from services.report_service import (
     create_report_state,
     create_template,
     delete_template,
-    get_report_by_admin_msg,
     get_report_state,
     get_template,
     get_template_by_slug,
@@ -29,8 +27,7 @@ from services.report_service import (
     save_report_admin_msg,
     update_template,
 )
-from services.user_service import get_user
-from utils.tg_helpers import user_mention
+from services.user_service import upsert_user
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -48,21 +45,20 @@ class CreateReport(StatesGroup):
 
 
 class EditReport(StatesGroup):
-    choose_field = State()
     new_value = State()
 
 
-# ── /reportgen (admin group only) ────────────────────────────────────────────
+# ── /reportgen ────────────────────────────────────────────────────────────────
 
 @router.message(Command("reportgen"), F.chat.id == settings.ADMIN_GROUP_ID)
 async def cmd_reportgen(msg: Message) -> None:
     await msg.answer(
         "🛠 <b>Report Link Generator</b>\n\nChoose an action:",
-        reply_markup=_reportgen_main_kb(),
+        reply_markup=_main_kb(),
     )
 
 
-def _reportgen_main_kb() -> InlineKeyboardMarkup:
+def _main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -74,16 +70,17 @@ def _reportgen_main_kb() -> InlineKeyboardMarkup:
     )
 
 
-# ── Create flow ───────────────────────────────────────────────────────────────
+# ── Create ────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "rgen:create", F.message.chat.id == settings.ADMIN_GROUP_ID)
-async def rgen_create_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def rgen_create_start(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(CreateReport.title)
-    await callback.message.edit_text(
-        "➕ <b>Create Report Link</b>\n\nStep 1/4 — Send the <b>title</b> for this report link.\n"
+    await cb.message.edit_text(
+        "➕ <b>Create Report Link — Step 1/4</b>\n\n"
+        "Send the <b>title</b> for this report link.\n"
         "Example: <i>Hoppa link</i>"
     )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.message(CreateReport.title, F.chat.id == settings.ADMIN_GROUP_ID)
@@ -91,8 +88,8 @@ async def rgen_got_title(msg: Message, state: FSMContext) -> None:
     await state.update_data(title=msg.text.strip())
     await state.set_state(CreateReport.prompt_msg)
     await msg.answer(
-        "Step 2/4 — Send the <b>report prompt message</b>.\n"
-        "This is shown to users when they open the report link.\n"
+        "<b>Step 2/4</b> — Send the <b>report prompt message</b>.\n"
+        "Shown to users when they open the report link.\n"
         "Example: <i>Do you want to report that Movie Hoppa is not working?</i>"
     )
 
@@ -102,8 +99,8 @@ async def rgen_got_prompt(msg: Message, state: FSMContext) -> None:
     await state.update_data(prompt_msg=msg.text.strip())
     await state.set_state(CreateReport.invalid_msg)
     await msg.answer(
-        "Step 3/4 — Send the <b>invalid/resolved message</b>.\n"
-        "Sent to the user when an admin marks the report as Invalid.\n"
+        "<b>Step 3/4</b> — Send the <b>invalid/resolved message</b>.\n"
+        "Sent to users when an admin marks the report as Invalid.\n"
         "Example: <i>The Movie Hoppa link is working fine, there is no issue.</i>"
     )
 
@@ -113,8 +110,8 @@ async def rgen_got_invalid(msg: Message, state: FSMContext) -> None:
     await state.update_data(invalid_msg=msg.text.strip())
     await state.set_state(CreateReport.done_msg)
     await msg.answer(
-        "Step 4/4 — Send the <b>done/fixed message</b>.\n"
-        "Sent to the user when an admin marks the report as Done.\n"
+        "<b>Step 4/4</b> — Send the <b>done/fixed message</b>.\n"
+        "Sent to users when an admin marks the report as Done.\n"
         "Example: <i>The movie link has been fixed.</i>"
     )
 
@@ -123,7 +120,6 @@ async def rgen_got_invalid(msg: Message, state: FSMContext) -> None:
 async def rgen_got_done(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.clear()
-
     template = await create_template(
         title=data["title"],
         prompt_msg=data["prompt_msg"],
@@ -132,227 +128,209 @@ async def rgen_got_done(msg: Message, state: FSMContext) -> None:
     )
     bot_info = await msg.bot.get_me()
     deep_link = f"https://t.me/{bot_info.username}?start=report_{template['slug']}"
-
     await msg.answer(
         f"✅ <b>Report link created!</b>\n\n"
-        f"<b>Title:</b> {template['title']}\n"
+        f"<b>Title:</b> {template['title']}\n\n"
         f"<b>Deep link:</b>\n<code>{deep_link}</code>\n\n"
-        f"Share this link with users to let them report issues."
+        "Share this link with users to let them submit reports."
     )
 
 
-# ── Delete flow ───────────────────────────────────────────────────────────────
+# ── Delete ────────────────────────────────────────────────────────────────────
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rgen:delete:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rgen_delete_list(callback: CallbackQuery) -> None:
-    page = int(callback.data.split(":")[2])
+async def rgen_delete_list(cb: CallbackQuery) -> None:
+    page = int(cb.data.split(":")[2])
     templates = await list_templates(page, PAGE_SIZE)
     total = await count_templates()
 
     if not templates:
-        await callback.message.edit_text("ℹ️ No report links found.")
-        await callback.answer()
+        await cb.message.edit_text("ℹ️ No report links found.")
+        await cb.answer()
         return
 
     buttons = [
-        [InlineKeyboardButton(
-            text=t["title"],
-            callback_data=f"rgen:del_confirm:{str(t['_id'])}",
-        )]
+        [InlineKeyboardButton(text=t["title"], callback_data=f"rgen:del_confirm:{t['_id']}")]
         for t in templates
     ]
-    nav = _pagination_nav("rgen:delete", page, total)
+    nav = _nav_buttons("rgen:delete", page, total)
     if nav:
         buttons.append(nav)
     buttons.append([InlineKeyboardButton(text="« Back", callback_data="rgen:back")])
 
-    await callback.message.edit_text(
-        "🗑 <b>Delete Report Link</b>\n\nSelect a link to delete:",
+    await cb.message.edit_text(
+        "🗑 <b>Delete — select a link:</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rgen:del_confirm:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rgen_delete_confirm(callback: CallbackQuery) -> None:
-    tid = callback.data.split(":", 2)[2]
+async def rgen_delete_confirm(cb: CallbackQuery) -> None:
+    tid = cb.data.split(":", 2)[2]
     template = await get_template(tid)
     if not template:
-        await callback.message.edit_text("❌ Template not found.")
-        await callback.answer()
+        await cb.message.edit_text("❌ Template not found.")
+        await cb.answer()
         return
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Confirm Delete", callback_data=f"rgen:del_do:{tid}"),
-                InlineKeyboardButton(text="❌ Cancel", callback_data="rgen:delete:0"),
+    await cb.message.edit_text(
+        f"⚠️ Delete <b>{template['title']}</b>?\nThis cannot be undone.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Confirm", callback_data=f"rgen:del_do:{tid}"),
+                    InlineKeyboardButton(text="❌ Cancel", callback_data="rgen:delete:0"),
+                ]
             ]
-        ]
+        ),
     )
-    await callback.message.edit_text(
-        f"⚠️ Delete <b>{template['title']}</b>?\n\nThis cannot be undone.",
-        reply_markup=kb,
-    )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rgen:del_do:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rgen_delete_do(callback: CallbackQuery) -> None:
-    tid = callback.data.split(":", 2)[2]
+async def rgen_delete_do(cb: CallbackQuery) -> None:
+    tid = cb.data.split(":", 2)[2]
     template = await get_template(tid)
     title = template["title"] if template else tid
     if await delete_template(tid):
-        await callback.message.edit_text(f"✅ <b>{title}</b> deleted.")
+        await cb.message.edit_text(f"✅ <b>{title}</b> deleted.")
     else:
-        await callback.message.edit_text("❌ Deletion failed.")
-    await callback.answer()
+        await cb.message.edit_text("❌ Deletion failed.")
+    await cb.answer()
 
 
-# ── Edit flow ─────────────────────────────────────────────────────────────────
+# ── Edit ──────────────────────────────────────────────────────────────────────
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rgen:edit:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rgen_edit_list(callback: CallbackQuery) -> None:
-    page = int(callback.data.split(":")[2])
+async def rgen_edit_list(cb: CallbackQuery) -> None:
+    page = int(cb.data.split(":")[2])
     templates = await list_templates(page, PAGE_SIZE)
     total = await count_templates()
 
     if not templates:
-        await callback.message.edit_text("ℹ️ No report links found.")
-        await callback.answer()
+        await cb.message.edit_text("ℹ️ No report links found.")
+        await cb.answer()
         return
 
     buttons = [
-        [InlineKeyboardButton(
-            text=t["title"],
-            callback_data=f"rgen:edit_fields:{str(t['_id'])}",
-        )]
+        [InlineKeyboardButton(text=t["title"], callback_data=f"rgen:edit_fields:{t['_id']}")]
         for t in templates
     ]
-    nav = _pagination_nav("rgen:edit", page, total)
+    nav = _nav_buttons("rgen:edit", page, total)
     if nav:
         buttons.append(nav)
     buttons.append([InlineKeyboardButton(text="« Back", callback_data="rgen:back")])
 
-    await callback.message.edit_text(
-        "✏️ <b>Edit Report Link</b>\n\nSelect a link to edit:",
+    await cb.message.edit_text(
+        "✏️ <b>Edit — select a link:</b>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rgen:edit_fields:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rgen_edit_fields(callback: CallbackQuery) -> None:
-    tid = callback.data.split(":", 2)[2]
+async def rgen_edit_fields(cb: CallbackQuery) -> None:
+    tid = cb.data.split(":", 2)[2]
     template = await get_template(tid)
     if not template:
-        await callback.message.edit_text("❌ Template not found.")
-        await callback.answer()
+        await cb.message.edit_text("❌ Template not found.")
+        await cb.answer()
         return
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Title", callback_data=f"rgen:edit_field:{tid}:title")],
-            [InlineKeyboardButton(text="Prompt message", callback_data=f"rgen:edit_field:{tid}:prompt_msg")],
-            [InlineKeyboardButton(text="Invalid message", callback_data=f"rgen:edit_field:{tid}:invalid_msg")],
-            [InlineKeyboardButton(text="Done message", callback_data=f"rgen:edit_field:{tid}:done_msg")],
-            [InlineKeyboardButton(text="« Back", callback_data="rgen:edit:0")],
-        ]
+    await cb.message.edit_text(
+        f"✏️ Editing: <b>{template['title']}</b>\n\nChoose a field:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Title", callback_data=f"rgen:edit_field:{tid}:title")],
+                [InlineKeyboardButton(text="Prompt message", callback_data=f"rgen:edit_field:{tid}:prompt_msg")],
+                [InlineKeyboardButton(text="Invalid message", callback_data=f"rgen:edit_field:{tid}:invalid_msg")],
+                [InlineKeyboardButton(text="Done message", callback_data=f"rgen:edit_field:{tid}:done_msg")],
+                [InlineKeyboardButton(text="« Back", callback_data="rgen:edit:0")],
+            ]
+        ),
     )
-    await callback.message.edit_text(
-        f"✏️ Editing: <b>{template['title']}</b>\n\nChoose a field to edit:",
-        reply_markup=kb,
-    )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rgen:edit_field:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rgen_edit_field_prompt(callback: CallbackQuery, state: FSMContext) -> None:
-    parts = callback.data.split(":", 3)
+async def rgen_edit_field_prompt(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = cb.data.split(":", 3)
     tid, field = parts[2], parts[3]
     await state.set_state(EditReport.new_value)
     await state.update_data(edit_tid=tid, edit_field=field)
-
-    field_labels = {
-        "title": "Title",
-        "prompt_msg": "Prompt message",
-        "invalid_msg": "Invalid message",
-        "done_msg": "Done message",
-    }
-    await callback.message.edit_text(
-        f"✏️ Send the new value for <b>{field_labels.get(field, field)}</b>:"
+    labels = {"title": "Title", "prompt_msg": "Prompt message",
+              "invalid_msg": "Invalid message", "done_msg": "Done message"}
+    await cb.message.edit_text(
+        f"✏️ Send the new value for <b>{labels.get(field, field)}</b>:"
     )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.message(EditReport.new_value, F.chat.id == settings.ADMIN_GROUP_ID)
 async def rgen_edit_save(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.clear()
-    tid = data["edit_tid"]
-    field = data["edit_field"]
-    new_value = msg.text.strip()
-    if await update_template(tid, {field: new_value}):
-        await msg.answer(f"✅ Field <b>{field}</b> updated.")
+    if await update_template(data["edit_tid"], {data["edit_field"]: msg.text.strip()}):
+        await msg.answer(f"✅ Field updated.")
     else:
         await msg.answer("❌ Update failed.")
 
 
-# ── Back button ───────────────────────────────────────────────────────────────
+# ── Back ──────────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "rgen:back", F.message.chat.id == settings.ADMIN_GROUP_ID)
-async def rgen_back(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
+async def rgen_back(cb: CallbackQuery) -> None:
+    await cb.message.edit_text(
         "🛠 <b>Report Link Generator</b>\n\nChoose an action:",
-        reply_markup=_reportgen_main_kb(),
+        reply_markup=_main_kb(),
     )
-    await callback.answer()
+    await cb.answer()
 
 
-# ── User: Proceed / Cancel report ────────────────────────────────────────────
+# ── User: Proceed / Cancel ────────────────────────────────────────────────────
 
 @router.callback_query(lambda c: c.data and c.data.startswith("rpt_proceed:"))
-async def rpt_proceed(callback: CallbackQuery) -> None:
-    tid = callback.data.split(":", 1)[1]
-    user = callback.from_user
+async def rpt_proceed(cb: CallbackQuery) -> None:
+    tid = cb.data.split(":", 1)[1]
+    user = cb.from_user
+    await upsert_user(user)
 
     template = await get_template(tid)
     if not template:
-        await callback.answer("❌ This report link no longer exists.", show_alert=True)
+        await cb.answer("❌ This report link no longer exists.", show_alert=True)
         return
 
-    # Anti-spam: check existing pending state
     state = await get_report_state(user.id, tid)
     if state and state["status"] == "pending":
-        await callback.answer("⏳ You already have a pending report. Wait for admin resolution.", show_alert=True)
+        await cb.answer(
+            "⏳ You already have a pending report. Wait for admin resolution.",
+            show_alert=True,
+        )
         return
 
     await create_report_state(user.id, tid)
 
-    # Fetch user info for admin message
-    user_doc = await get_user(user.id)
-    uname = f"@{user.username}" if user.username else f"ID: <code>{user.id}</code>"
-
+    uname = f"@{user.username}" if user.username else f"<code>{user.id}</code>"
     try:
-        sent = await callback.bot.send_message(
+        sent = await cb.bot.send_message(
             chat_id=settings.ADMIN_GROUP_ID,
             text=(
                 f"🚨 <b>New Report</b>\n\n"
@@ -377,33 +355,32 @@ async def rpt_proceed(callback: CallbackQuery) -> None:
         await save_report_admin_msg(user.id, tid, sent.message_id)
     except Exception as exc:
         logger.error("Failed to send report to admin group: %s", exc)
-        await callback.answer("❌ Failed to submit report. Please try again.", show_alert=True)
+        await cb.answer("❌ Failed to submit report. Try again.", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        "✅ <b>Report submitted!</b>\n\nAdmins have been notified. "
-        "You will receive a message once it is resolved."
+    await cb.message.edit_text(
+        "✅ <b>Report submitted!</b>\n\n"
+        "Admins have been notified. You will receive a message once it is resolved."
     )
-    await callback.answer("Report sent!")
+    await cb.answer("Report sent!")
 
 
 @router.callback_query(lambda c: c.data == "rpt_cancel")
-async def rpt_cancel(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("❌ Report cancelled.")
-    await callback.answer()
+async def rpt_cancel(cb: CallbackQuery) -> None:
+    await cb.message.edit_text("❌ Report cancelled.")
+    await cb.answer()
 
 
-# ── Admin: Done / Invalid buttons on report messages ─────────────────────────
+# ── Admin: Done / Invalid ─────────────────────────────────────────────────────
 
 @router.callback_query(
     lambda c: c.data and c.data.startswith("rpt_admin:"),
     F.message.chat.id == settings.ADMIN_GROUP_ID,
 )
-async def rpt_admin_action(callback: CallbackQuery) -> None:
-    parts = callback.data.split(":")
-    # rpt_admin:<action>:<user_id>:<template_id>
+async def rpt_admin_action(cb: CallbackQuery) -> None:
+    parts = cb.data.split(":")
     if len(parts) != 4:
-        await callback.answer("Malformed callback data.", show_alert=True)
+        await cb.answer("Malformed data.", show_alert=True)
         return
 
     _, action, user_id_str, tid = parts
@@ -411,51 +388,44 @@ async def rpt_admin_action(callback: CallbackQuery) -> None:
 
     template = await get_template(tid)
     if not template:
-        await callback.answer("Template no longer exists.", show_alert=True)
+        await cb.answer("Template no longer exists.", show_alert=True)
         return
 
     state = await get_report_state(user_id, tid)
     if not state or state["status"] != "pending":
-        await callback.answer("This report has already been resolved.", show_alert=True)
+        await cb.answer("This report has already been resolved.", show_alert=True)
         return
 
     if action == "done":
-        reply_text = template["done_msg"]
-        status = "done"
-        label = "✅ Done"
+        reply_text, status, label = template["done_msg"], "done", "✅ Done"
     else:
-        reply_text = template["invalid_msg"]
-        status = "invalid"
-        label = "❌ Invalid"
+        reply_text, status, label = template["invalid_msg"], "invalid", "❌ Invalid"
 
     await resolve_report_state(user_id, tid, status)
 
     try:
-        await callback.bot.send_message(chat_id=user_id, text=reply_text)
+        await cb.bot.send_message(chat_id=user_id, text=reply_text)
     except Exception as exc:
         logger.warning("Could not notify user %d: %s", user_id, exc)
 
-    # Update the admin message to show resolution
-    admin_name = callback.from_user.first_name
     try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-        await callback.message.edit_text(
-            callback.message.text + f"\n\n<b>Resolved as {label} by {admin_name}</b>"
+        await cb.message.edit_reply_markup(reply_markup=None)
+        admin_name = cb.from_user.first_name
+        await cb.message.edit_text(
+            cb.message.text + f"\n\n<i>Resolved as {label} by {admin_name}</i>"
         )
     except Exception:
         pass
 
-    await callback.answer(f"Marked as {label}")
+    await cb.answer(f"Marked as {label}")
 
 
-# ── Pagination helper ─────────────────────────────────────────────────────────
+# ── Pagination ────────────────────────────────────────────────────────────────
 
-def _pagination_nav(
-    prefix: str, page: int, total: int
-) -> list[InlineKeyboardButton] | None:
-    buttons = []
+def _nav_buttons(prefix: str, page: int, total: int) -> list[InlineKeyboardButton] | None:
+    btns = []
     if page > 0:
-        buttons.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"{prefix}:{page - 1}"))
+        btns.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"{prefix}:{page - 1}"))
     if (page + 1) * PAGE_SIZE < total:
-        buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"{prefix}:{page + 1}"))
-    return buttons if buttons else None
+        btns.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"{prefix}:{page + 1}"))
+    return btns or None

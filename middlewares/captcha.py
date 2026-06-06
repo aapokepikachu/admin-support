@@ -4,7 +4,6 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
-from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
 
 from services.captcha_service import (
@@ -16,6 +15,7 @@ from services.captcha_service import (
 
 logger = logging.getLogger(__name__)
 
+# Commands that bypass captcha entirely
 _BYPASS_COMMANDS = {"/start", "/help", "/ping"}
 
 
@@ -29,7 +29,6 @@ class CaptchaMiddleware(BaseMiddleware):
         if not isinstance(event, Message) or event.chat.type != "private":
             return await handler(event, data)
 
-        # Allow certain commands through without captcha
         if event.text and any(event.text.startswith(cmd) for cmd in _BYPASS_COMMANDS):
             return await handler(event, data)
 
@@ -43,7 +42,6 @@ class CaptchaMiddleware(BaseMiddleware):
         if await has_passed_captcha(user.id):
             return await handler(event, data)
 
-        # Check if there's already a pending captcha session
         session = await get_pending_captcha(user.id)
         if session is None:
             session = await create_captcha_session(user.id)
@@ -56,7 +54,7 @@ class CaptchaMiddleware(BaseMiddleware):
         )
         await event.answer(
             f"🔐 <b>Captcha required</b>\n\n{session['question']}\n\n"
-            "Please select the correct answer to continue:",
+            "Select the correct answer to continue:",
             reply_markup=kb,
         )
-        # Do NOT call handler — block the message
+        # Block the message — do NOT call handler

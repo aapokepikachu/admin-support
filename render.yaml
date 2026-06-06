@@ -1,17 +1,20 @@
 services:
-  - type: worker          # background worker (no open port needed for long polling)
-    name: support-bot
+  - type: web                         # FREE tier — web service, not background worker
+    name: admin-support
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     plan: free
+    healthCheckPath: /health          # Render uses this to confirm the service is up
     envVars:
       - key: BOT_TOKEN
-        sync: false
+        sync: false                   # Set manually in Render dashboard (secret)
       - key: ADMIN_GROUP_ID
-        sync: false
+        sync: false                   # Set manually in Render dashboard (secret)
       - key: MONGO_URI
-        sync: false
+        sync: false                   # Set manually in Render dashboard (secret)
+      - key: WEBHOOK_HOST
+        sync: false                   # Set to your Render URL after first deploy
       - key: DB_NAME
         value: supportbot
       - key: RATE_LIMIT_MESSAGES
@@ -22,3 +25,4 @@ services:
         value: "300"
       - key: PYTHON_VERSION
         value: "3.11.0"
+      # PORT is injected automatically by Render — do not set it here

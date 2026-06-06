@@ -6,7 +6,6 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import Message, TelegramObject
 
-from config import settings
 from services.ban_service import is_banned
 from services.rate_limit_service import check_rate_limit
 
@@ -20,7 +19,6 @@ class RateLimitMiddleware(BaseMiddleware):
         event: Message,
         data: dict[str, Any],
     ) -> Any:
-        # Only apply to private chats
         if not isinstance(event, Message) or event.chat.type != "private":
             return await handler(event, data)
 
@@ -34,8 +32,7 @@ class RateLimitMiddleware(BaseMiddleware):
 
         allowed, retry_after = await check_rate_limit(user.id)
         if not allowed:
-            mins = retry_after // 60
-            secs = retry_after % 60
+            mins, secs = divmod(retry_after, 60)
             time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
             await event.answer(
                 f"⏳ <b>Slow down!</b> You're sending messages too fast.\n"
