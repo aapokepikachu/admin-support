@@ -307,8 +307,9 @@ UptimeRobot pings `/health` every 5 minutes, keeping the service awake 24/7 at n
 |---|---|
 | `/start` | Welcome message with relay explanation, rate-limit rules, and captcha notice |
 | `/help` | Brief list of user commands |
-| `/report` | Shows authorised channel list; actual reports are submitted via deep-links |
+| `/report` | Start a broken-link report flow for an authorised channel |
 | `/ping` | Replies with "Pong" and round-trip latency in ms |
+| `/about` | Shows bot version and credits |
 
 ## Admin commands (admin group only, all members)
 
@@ -325,7 +326,13 @@ UptimeRobot pings `/health` every 5 minutes, keeping the service awake 24/7 at n
 | `/setchannel list` | Show all whitelisted channels |
 | `/reportgen` | Open the report link generator (Create / Edit / Delete) |
 | `/captcha on\|off` | Toggle captcha for new users |
-| `/db` | Show MongoDB health stats |
+| `/db` | Show MongoDB health stats + management buttons (delete templates, clear maps, reset captcha, wipe DB) |
+
+---
+
+## Credits
+
+Made by [@PokemonBots](https://t.me/PokemonBots)
 
 ---
 

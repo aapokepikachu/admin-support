@@ -4,6 +4,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject
 
 from services.captcha_service import (
@@ -15,8 +16,8 @@ from services.captcha_service import (
 
 logger = logging.getLogger(__name__)
 
-# Commands that bypass captcha entirely
-_BYPASS_COMMANDS = {"/start", "/help", "/ping"}
+# These commands always bypass captcha
+_BYPASS_COMMANDS = {"/start", "/help", "/ping", "/report"}
 
 
 class CaptchaMiddleware(BaseMiddleware):
@@ -29,6 +30,7 @@ class CaptchaMiddleware(BaseMiddleware):
         if not isinstance(event, Message) or event.chat.type != "private":
             return await handler(event, data)
 
+        # Always allow commands through
         if event.text and any(event.text.startswith(cmd) for cmd in _BYPASS_COMMANDS):
             return await handler(event, data)
 
@@ -41,6 +43,14 @@ class CaptchaMiddleware(BaseMiddleware):
 
         if await has_passed_captcha(user.id):
             return await handler(event, data)
+
+        # If user is mid-FSM flow (e.g. waiting_link state), let it through
+        # so the flow handler can respond correctly
+        fsm_context: FSMContext | None = data.get("state")
+        if fsm_context is not None:
+            current = await fsm_context.get_state()
+            if current is not None:
+                return await handler(event, data)
 
         session = await get_pending_captcha(user.id)
         if session is None:
@@ -57,4 +67,4 @@ class CaptchaMiddleware(BaseMiddleware):
             "Select the correct answer to continue:",
             reply_markup=kb,
         )
-        # Block the message — do NOT call handler
+        # Block — do NOT call handler

@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 router.message.filter(F.chat.type == "private")
 
-# Commands that must never be forwarded to admin group
-_COMMANDS = {"/start", "/help", "/ping", "/report"}
+BOT_VERSION = "1.0.0"
 
 
 @router.message(CommandStart())
@@ -50,8 +49,20 @@ async def cmd_help(msg: Message) -> None:
         "📖 <b>Commands</b>\n\n"
         "/start — Welcome message\n"
         "/help — This help message\n"
-        "/report — Report a broken link\n"
-        "/ping — Check bot latency"
+        "/report — Report a broken link from an authorised channel\n"
+        "/ping — Check bot latency\n"
+        "/about — About this bot"
+    )
+
+
+@router.message(Command("about"))
+async def cmd_about(msg: Message) -> None:
+    await msg.answer(
+        f"🤖 <b>Admin Support Bot</b>  v{BOT_VERSION}\n\n"
+        "A support relay bot — forwards your messages to admins "
+        "and delivers their replies back to you.\n\n"
+        "Made by: <a href='https://t.me/PokemonBots'>@PokemonBots</a>",
+        disable_web_page_preview=True,
     )
 
 
@@ -73,16 +84,15 @@ async def block_forwards(msg: Message) -> None:
     )
 
 
-# ── Message forwarding — only when NOT in any FSM state and NOT a command ─────
+# ── Message forwarding — only outside FSM state and not a command ─────────────
 
 @router.message(
     F.text | F.photo | F.video | F.document | F.audio | F.voice | F.sticker | F.animation,
-    ~F.text.startswith("/"),   # never forward commands
+    ~F.text.startswith("/"),
 )
 async def forward_to_admin(msg: Message, state: FSMContext) -> None:
-    # Don't forward if user is mid-flow in any FSM state
-    current_state = await state.get_state()
-    if current_state is not None:
+    # Don't forward if user is mid-flow
+    if await state.get_state() is not None:
         return
 
     user = msg.from_user
@@ -122,6 +132,6 @@ async def _handle_report_deeplink(msg: Message, slug: str) -> None:
         f"📋 <b>Report</b>\n\n{template['prompt_msg']}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Proceed", callback_data=f"rpt_proceed:{tid}"),
-            InlineKeyboardButton(text="❌ Cancel", callback_data="rpt_cancel"),
+            InlineKeyboardButton(text="❌ Cancel",  callback_data="rpt_cancel"),
         ]]),
     )
