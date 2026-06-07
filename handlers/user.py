@@ -4,8 +4,7 @@ import logging
 import time
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import settings
@@ -90,12 +89,9 @@ async def block_forwards(msg: Message) -> None:
 @router.message(
     F.text | F.photo | F.video | F.document | F.audio | F.voice | F.sticker | F.animation,
     ~F.text.startswith("/"),
+    StateFilter(None),   # only when NOT in any FSM state — aiogram skips if user is in a flow
 )
-async def forward_to_admin(msg: Message, state: FSMContext) -> None:
-    # Don't forward if user is mid-flow
-    if await state.get_state() is not None:
-        return
-
+async def forward_to_admin(msg: Message) -> None:
     user = msg.from_user
     await upsert_user(user)
     try:

@@ -94,9 +94,9 @@ def build_app() -> web.Application:
 
     dp.include_router(group_guard.router)
     dp.include_router(captcha.router)
+    dp.include_router(report.router)   # BEFORE user — FSM handlers must take priority
     dp.include_router(user.router)
     dp.include_router(admin.router)
-    dp.include_router(report.router)
 
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
