@@ -39,6 +39,7 @@ async def _ensure_indexes() -> None:
     await db.settings.create_index("key", unique=True)
     # Link tokens expire after 30 days to keep collection small
     await db.link_tokens.create_index("created_at", expireAfterSeconds=2592000)
+    await db.burst_track.create_index("user_id", unique=True)
 
 
 def get_db() -> AsyncIOMotorDatabase:
