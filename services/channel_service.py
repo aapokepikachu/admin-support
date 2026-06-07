@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from db import get_db
@@ -23,4 +24,16 @@ async def list_channels() -> list[dict[str, Any]]:
 
 
 async def is_allowed_channel(channel_id: int) -> bool:
+    """Check by numeric ID."""
     return bool(await get_db().allowed_channels.find_one({"channel_id": channel_id}))
+
+
+async def find_channel_by_username(username: str) -> dict[str, Any] | None:
+    """
+    Look up an allowed channel by its stored title (case-insensitive).
+    Admins set the title when running /setchannel add <id> <title>.
+    The title should match the channel's @username for this to work reliably.
+    """
+    return await get_db().allowed_channels.find_one(
+        {"title": {"$regex": f"^@?{re.escape(username)}$", "$options": "i"}}
+    )

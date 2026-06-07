@@ -37,6 +37,8 @@ async def _ensure_indexes() -> None:
     await db.rate_limit.create_index("user_id", unique=True)
     await db.captcha_sessions.create_index("user_id", unique=True)
     await db.settings.create_index("key", unique=True)
+    # Link tokens expire after 30 days to keep collection small
+    await db.link_tokens.create_index("created_at", expireAfterSeconds=2592000)
 
 
 def get_db() -> AsyncIOMotorDatabase:

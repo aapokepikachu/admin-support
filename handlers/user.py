@@ -5,13 +5,13 @@ import time
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import Message
 
 from config import settings
-from services.channel_service import list_channels
 from services.message_map_service import save_mapping
 from services.report_service import get_report_state, get_template_by_slug
 from services.user_service import upsert_user
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -51,7 +51,7 @@ async def cmd_help(msg: Message) -> None:
         "📖 <b>Commands</b>\n\n"
         "/start — Welcome message\n"
         "/help — This help message\n"
-        "/report — Report a broken link\n"
+        "/report — Report a broken link from an authorised channel\n"
         "/ping — Check bot latency"
     )
 
@@ -62,29 +62,6 @@ async def cmd_ping(msg: Message) -> None:
     reply = await msg.answer("🏓 Pong!")
     ms = int((time.monotonic() - t) * 1000)
     await reply.edit_text(f"🏓 <b>Pong!</b>  <code>{ms} ms</code>")
-
-
-@router.message(Command("report"))
-async def cmd_report(msg: Message) -> None:
-    channels = await list_channels()
-    if not channels:
-        await msg.answer(
-            "ℹ️ No authorised channels configured yet.\n"
-            "Ask an admin to add channels with /setchannel, or use a report "
-            "deep-link provided by the support team."
-        )
-        return
-    # Show channels as hyperlinks, not raw IDs
-    lines = "\n".join(
-        f"• <a href='https://t.me/c/{str(c['channel_id']).lstrip('-100')}/1'>{c['title']}</a>"
-        for c in channels
-    )
-    await msg.answer(
-        "🔗 <b>Report a broken link</b>\n\n"
-        "Use the report deep-link provided by the support team to submit a report.\n\n"
-        f"<b>Authorised channels:</b>\n{lines}",
-        disable_web_page_preview=True,
-    )
 
 
 # ── Block forwarded messages ──────────────────────────────────────────────────
@@ -120,7 +97,7 @@ async def forward_to_admin(msg: Message) -> None:
         await msg.answer("❌ Could not forward your message. Please try again later.")
 
 
-# ── Report deep-link ──────────────────────────────────────────────────────────
+# ── Report deep-link handler ──────────────────────────────────────────────────
 
 async def _handle_report_deeplink(msg: Message, slug: str) -> None:
     template = await get_template_by_slug(slug)
