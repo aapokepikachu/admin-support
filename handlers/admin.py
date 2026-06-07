@@ -43,6 +43,8 @@ async def cmd_helpa(msg: Message) -> None:
         "/captcha on|off — Toggle captcha for new users\n\n"
         "<b>System</b>\n"
         "/db — Database health + management actions\n"
+        "/setreportcount &lt;n&gt; — Set max /report submissions per user\n"
+        "/reportlist — View all active link reports\n"
         "/helpa — This message"
     )
 
@@ -221,7 +223,7 @@ async def db_confirm(cb: CallbackQuery) -> None:
 
     elif action == "wipe_all":
         for col in ["users", "bans", "message_map", "report_templates", "report_states",
-                    "allowed_channels", "rate_limit", "captcha_sessions", "link_tokens", "fsm_states"]:
+                    "allowed_channels", "rate_limit", "captcha_sessions", "link_reports", "burst_track", "fsm_states"]:
             await db[col].delete_many({})
         await cb.message.edit_text(f"💥 Database wiped by {admin}.")
 
@@ -336,3 +338,45 @@ async def _resolve_target(msg: Message) -> int | None:
     if msg.reply_to_message.forward_from:
         return msg.reply_to_message.forward_from.id
     return None
+
+
+# ── /setreportcount ───────────────────────────────────────────────────────────
+
+@router.message(Command("setreportcount"))
+async def cmd_setreportcount(msg: Message) -> None:
+    from services.link_report_service import get_report_limit, set_report_limit
+    parts = msg.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        current = await get_report_limit()
+        await msg.reply(
+            f"Current report limit: <b>{current}</b> per user\n\n"
+            "Usage: <code>/setreportcount &lt;number&gt;</code>\n"
+            "Example: <code>/setreportcount 5</code>"
+        )
+        return
+    n = int(parts[1].strip())
+    if n < 1 or n > 50:
+        await msg.reply("❌ Value must be between 1 and 50.")
+        return
+    await set_report_limit(n)
+    await msg.reply(f"✅ Report limit set to <b>{n}</b> per user.")
+
+
+# ── /reportlist (admin view) ──────────────────────────────────────────────────
+
+@router.message(Command("reportlist"))
+async def cmd_reportlist_admin(msg: Message) -> None:
+    from services.link_report_service import get_all_pending_reports, get_report_limit
+    reports = await get_all_pending_reports()
+    limit = await get_report_limit()
+    if not reports:
+        await msg.reply("✅ No active link reports.")
+        return
+    lines = [
+        f"• <code>{r['user_id']}</code> — <code>{r['link']}</code>"
+        for r in reports
+    ]
+    text = f"📋 <b>Active link reports ({len(reports)}) — limit: {limit}/user:</b>\n\n" + "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:3990] + "\n…(truncated)"
+    await msg.reply(text)

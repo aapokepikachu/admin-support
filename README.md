@@ -308,6 +308,7 @@ UptimeRobot pings `/health` every 5 minutes, keeping the service awake 24/7 at n
 | `/start` | Welcome message with relay explanation, rate-limit rules, and captcha notice |
 | `/help` | Brief list of user commands |
 | `/report` | Start a broken-link report flow for an authorised channel |
+| `/reportlist` | View your active reports and remaining quota |
 | `/ping` | Replies with "Pong" and round-trip latency in ms |
 | `/about` | Shows bot version and credits |
 
@@ -327,6 +328,8 @@ UptimeRobot pings `/health` every 5 minutes, keeping the service awake 24/7 at n
 | `/reportgen` | Open the report link generator (Create / Edit / Delete) |
 | `/captcha on\|off` | Toggle captcha for new users |
 | `/db` | Show MongoDB health stats + management buttons (delete templates, clear maps, reset captcha, wipe DB) |
+| `/setreportcount <n>` | Set the maximum number of active `/report` submissions per user (default: 2) |
+| `/reportlist` | View all users' active link reports |
 
 ---
 

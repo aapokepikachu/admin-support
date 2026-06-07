@@ -50,6 +50,7 @@ async def cmd_help(msg: Message) -> None:
         "/start — Welcome message\n"
         "/help — This help message\n"
         "/report — Report a broken link from an authorised channel\n"
+        "/reportlist — View your active reports\n"
         "/ping — Check bot latency\n"
         "/about — About this bot"
     )

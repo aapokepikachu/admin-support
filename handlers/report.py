@@ -16,21 +16,22 @@ from aiogram.types import (
 
 from config import settings
 from services.channel_service import find_channel_by_username, is_allowed_channel, list_channels
+from services.link_report_service import (
+    count_user_reports, create_link_report, get_link_report,
+    get_report_limit, get_user_reports, has_reported_link,
+    resolve_link_report, set_link_report_admin_msg,
+)
 from services.report_service import (
     count_templates, create_report_state, create_template, delete_template,
     get_report_state, get_template, get_template_by_slug, list_templates,
     resolve_report_state, save_report_admin_msg, update_template,
 )
 from services.user_service import upsert_user
-from db import get_db
 
 logger = logging.getLogger(__name__)
 router = Router()
 PAGE_SIZE = 5
 
-# Correct filters:
-# _IN_ADMIN_MSG  — for message handlers (F.chat.id works on Message)
-# _IN_ADMIN_CB   — for callback_query handlers (must use F.message.chat.id)
 _IN_ADMIN_MSG = F.chat.id == settings.ADMIN_GROUP_ID
 _IN_ADMIN_CB  = F.message.chat.id == settings.ADMIN_GROUP_ID
 
@@ -38,10 +39,10 @@ _IN_ADMIN_CB  = F.message.chat.id == settings.ADMIN_GROUP_ID
 # ── FSM States ────────────────────────────────────────────────────────────────
 
 class CreateReport(StatesGroup):
-    title = State()
+    title     = State()
     prompt_msg = State()
     invalid_msg = State()
-    done_msg = State()
+    done_msg  = State()
 
 
 class EditReport(StatesGroup):
@@ -52,10 +53,23 @@ class UserReport(StatesGroup):
     waiting_link = State()
 
 
-# ── /report user flow ─────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# /report — user broken-link submission flow
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.message(Command("report"), F.chat.type == "private")
 async def cmd_report(msg: Message, state: FSMContext) -> None:
+    user = msg.from_user
+    limit = await get_report_limit()
+    active = await count_user_reports(user.id)
+    if active >= limit:
+        await msg.answer(
+            f"⚠️ You have reached the report limit (<b>{limit}</b> active reports).\n"
+            "Wait for your existing reports to be resolved before submitting new ones.\n\n"
+            "Use /reportlist to see your current reports."
+        )
+        return
+
     channels = await list_channels()
     if not channels:
         await msg.answer(
@@ -63,14 +77,16 @@ async def cmd_report(msg: Message, state: FSMContext) -> None:
             "Ask an admin to add channels using /setchannel."
         )
         return
+
     lines = "\n".join(_channel_line(c) for c in channels)
     await state.set_state(UserReport.waiting_link)
     await msg.answer(
         "🔗 <b>Report a broken link</b>\n\n"
         f"Send the link from one of these channels:\n{lines}\n\n"
-        "Only links from these channels are accepted.",
+        "⚠️ Only links from these channels are accepted.\n"
+        "Any other message will show an error — use Cancel to exit.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel")
+            InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel"),
         ]]),
         disable_web_page_preview=True,
     )
@@ -91,12 +107,38 @@ async def report_cancel(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.message(UserReport.waiting_link, F.chat.type == "private", F.text)
+@router.message(UserReport.waiting_link, F.chat.type == "private")
 async def report_got_link(msg: Message, state: FSMContext) -> None:
+    # Reject non-text (photos, stickers, etc.)
+    if not msg.text:
+        await msg.answer(
+            "❌ Please send a text link only.\n"
+            "Example: <code>https://t.me/ChannelName/123</code>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel"),
+            ]]),
+        )
+        return
+
     link = msg.text.strip()
     user = msg.from_user
-    channel_id, username = _parse_tme_link(link)
 
+    # Validate it looks like a Telegram post link
+    channel_id, username = _parse_tme_link(link)
+    if channel_id is None and username is None:
+        await msg.answer(
+            "❌ That's not a valid Telegram post link.\n"
+            "Please send a link like:\n"
+            "<code>https://t.me/ChannelName/123</code>\n"
+            "or <code>https://t.me/c/1234567890/123</code>\n\n"
+            "Use Cancel to exit.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel"),
+            ]]),
+        )
+        return
+
+    # Check channel is allowed
     allowed = False
     if channel_id is not None:
         allowed = await is_allowed_channel(channel_id)
@@ -105,76 +147,100 @@ async def report_got_link(msg: Message, state: FSMContext) -> None:
         if doc:
             allowed = True
 
-    if channel_id is None and username is None:
-        await msg.answer(
-            "❌ That doesn't look like a valid Telegram post link.\n"
-            "Please send a link like:\n"
-            "<code>https://t.me/ChannelName/123</code>\n"
-            "or <code>https://t.me/c/1234567890/123</code>"
-        )
-        return
-
     if not allowed:
         await msg.answer(
             "⛔ <b>This channel is not supported.</b>\n\n"
             "We only accept reports for links from our authorised channels.\n"
-            "Use /report to see the supported channels.",
+            "Use /report to see the list, or Cancel to exit.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel")
+                InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel"),
             ]]),
         )
         return
 
+    # Check duplicate — same link already pending for this user
+    if await has_reported_link(user.id, link):
+        await msg.answer(
+            "⚠️ You have already reported this link.\n"
+            "Please wait for admins to resolve it.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="❌ Cancel", callback_data="report_cancel"),
+            ]]),
+        )
+        return
+
+    # Re-check limit (race condition guard)
+    limit = await get_report_limit()
+    if await count_user_reports(user.id) >= limit:
+        await state.clear()
+        await msg.answer(
+            f"⚠️ Report limit reached ({limit}). Wait for existing reports to be resolved."
+        )
+        return
+
+    # All checks passed — create the report
     await state.clear()
+    report_id = await create_link_report(user.id, link)
+
     uname = f"@{user.username}" if user.username else "no username"
     await msg.answer(
-        "✅ <b>Report submitted!</b>\n\n"
-        "The link has been reported as not working.\n"
-        "Admins have been notified and will fix it soon."
+        f"✅ <b>Report submitted!</b>\n\n"
+        f"The link <code>{link}</code> has been reported as not working.\n"
+        "Admins have been notified and will fix it soon.\n\n"
+        "Use /reportlist to view your active reports."
     )
-    token = await _store_link(link)
+
     try:
-        await msg.bot.send_message(
+        sent = await msg.bot.send_message(
             chat_id=settings.ADMIN_GROUP_ID,
             text=(
                 f"🔴 <b>Broken Link Report</b>\n\n"
-                f"<b>Link:</b> {link}\n"
-                f"<b>Status:</b> Not working\n\n"
+                f"<b>Link:</b> {link}\n\n"
                 f"<b>Reported by:</b> {user.first_name} ({uname})\n"
                 f"<b>User ID:</b> <code>{user.id}</code>"
             ),
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ Fixed",   callback_data=f"lrpt:fixed:{user.id}:{token}"),
-                InlineKeyboardButton(text="❌ Invalid", callback_data=f"lrpt:invalid:{user.id}:{token}"),
+                InlineKeyboardButton(text="✅ Fixed",   callback_data=f"lrpt:fixed:{report_id}"),
+                InlineKeyboardButton(text="❌ Invalid", callback_data=f"lrpt:invalid:{report_id}"),
             ]]),
         )
+        await set_link_report_admin_msg(report_id, sent.message_id)
     except Exception as exc:
         logger.error("Failed to send link report to admin group: %s", exc)
 
 
 @router.callback_query(lambda c: c.data and c.data.startswith("lrpt:"))
 async def link_report_action(cb: CallbackQuery) -> None:
-    # No admin-group filter here — callback originates from the admin group message
-    # but we verify by checking the message chat
     if cb.message.chat.id != settings.ADMIN_GROUP_ID:
         await cb.answer()
         return
 
-    parts = cb.data.split(":", 3)
-    if len(parts) != 4:
+    parts = cb.data.split(":", 2)
+    if len(parts) != 3:
         await cb.answer("Malformed data.", show_alert=True)
         return
 
-    _, action, user_id_str, token = parts
-    user_id = int(user_id_str)
-    link = await _retrieve_link(token) or "(link unavailable)"
+    _, action, report_id = parts
+    report = await get_link_report(report_id)
+    if not report:
+        await cb.answer("This report no longer exists.", show_alert=True)
+        return
+    if report["status"] != "pending":
+        await cb.answer("Already resolved.", show_alert=True)
+        return
+
+    user_id = report["user_id"]
+    link = report["link"]
 
     if action == "fixed":
-        user_msg = f"✅ <b>Link Fixed!</b>\n\nThe link you reported has been fixed:\n{link}"
+        user_msg = f"✅ <b>Link Fixed!</b>\n\nYour reported link has been resolved:\n{link}"
         label = "✅ Fixed"
     else:
-        user_msg = f"ℹ️ <b>Link Still Working</b>\n\nThe link you reported is actually working fine:\n{link}"
+        user_msg = f"ℹ️ <b>Link Working</b>\n\nThe link you reported is working fine:\n{link}"
         label = "❌ Invalid"
+
+    # Resolve and DELETE from DB (storage reuse)
+    await resolve_link_report(report_id)
 
     try:
         await cb.bot.send_message(chat_id=user_id, text=user_msg)
@@ -184,13 +250,35 @@ async def link_report_action(cb: CallbackQuery) -> None:
     admin_name = cb.from_user.first_name
     try:
         await cb.message.edit_reply_markup(reply_markup=None)
-        await cb.message.edit_text(cb.message.text + f"\n\n<i>Marked as {label} by {admin_name}</i>")
+        await cb.message.edit_text(
+            cb.message.text + f"\n\n<i>Marked as {label} by {admin_name}</i>"
+        )
     except Exception:
         pass
     await cb.answer(f"Marked as {label}")
 
 
-# ── /reportgen ────────────────────────────────────────────────────────────────
+# ── /reportlist — user command ─────────────────────────────────────────────────
+
+@router.message(Command("reportlist"), F.chat.type == "private")
+async def cmd_reportlist_user(msg: Message) -> None:
+    reports = await get_user_reports(msg.from_user.id)
+    limit = await get_report_limit()
+    if not reports:
+        await msg.answer(
+            f"📋 You have no active reports.\n"
+            f"You can submit up to <b>{limit}</b> reports at a time via /report."
+        )
+        return
+    lines = [f"{i+1}. <code>{r['link']}</code>" for i, r in enumerate(reports)]
+    await msg.answer(
+        f"📋 <b>Your active reports ({len(reports)}/{limit}):</b>\n\n" + "\n".join(lines)
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# /reportgen — admin deep-link report template management
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.message(Command("reportgen"), _IN_ADMIN_MSG)
 async def cmd_reportgen(msg: Message) -> None:
@@ -255,7 +343,7 @@ async def rgen_got_invalid(msg: Message, state: FSMContext) -> None:
 async def rgen_got_done(msg: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await state.clear()
-    done_msg_text = msg.text.strip()  # current message IS the done_msg
+    done_msg_text = msg.text.strip()
     try:
         template = await create_template(
             title=data["title"],
@@ -401,7 +489,9 @@ async def rgen_back(cb: CallbackQuery) -> None:
     await cb.answer()
 
 
-# ── Deep-link report (Proceed / Cancel) ──────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Deep-link report flow (Proceed / Cancel / Done / Invalid)
+# ══════════════════════════════════════════════════════════════════════════════
 
 @router.callback_query(lambda c: c.data and c.data.startswith("rpt_proceed:"))
 async def rpt_proceed(cb: CallbackQuery) -> None:
@@ -446,11 +536,8 @@ async def rpt_cancel(cb: CallbackQuery) -> None:
     await cb.answer()
 
 
-# ── Admin: Done / Invalid ─────────────────────────────────────────────────────
-
 @router.callback_query(lambda c: c.data and c.data.startswith("rpt_admin:"))
 async def rpt_admin_action(cb: CallbackQuery) -> None:
-    # Verify this is coming from the admin group
     if cb.message.chat.id != settings.ADMIN_GROUP_ID:
         await cb.answer()
         return
@@ -496,21 +583,6 @@ def _parse_tme_link(link: str) -> tuple[int | None, str | None]:
     if m:
         return (None, m.group(1))
     return (None, None)
-
-
-async def _store_link(link: str) -> str:
-    from datetime import datetime
-    result = await get_db().link_tokens.insert_one({"link": link, "created_at": datetime.utcnow()})
-    return str(result.inserted_id)
-
-
-async def _retrieve_link(token: str) -> str | None:
-    from bson import ObjectId
-    try:
-        doc = await get_db().link_tokens.find_one({"_id": ObjectId(token)})
-        return doc["link"] if doc else None
-    except Exception:
-        return None
 
 
 def _nav_buttons(prefix: str, page: int, total: int) -> list[InlineKeyboardButton] | None:
