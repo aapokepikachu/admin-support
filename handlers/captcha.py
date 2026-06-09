@@ -3,6 +3,7 @@ from __future__ import annotations
 from aiogram import Router
 from aiogram.types import CallbackQuery
 
+from middlewares.rate_limit import _reset_burst
 from services.captcha_service import (
     get_pending_captcha,
     mark_captcha_passed,
@@ -27,6 +28,9 @@ async def captcha_answer(callback: CallbackQuery) -> None:
         await resolve_captcha(user.id)
         await mark_captcha_passed(user.id)
         await upsert_user(user)
+        # Reset burst window so solving captcha starts completely fresh —
+        # the messages that triggered the captcha no longer count
+        await _reset_burst(user.id)
         await callback.message.edit_text("✅ <b>Captcha passed!</b> You can now send messages.")
         await callback.answer("Verified!")
     else:

@@ -9,19 +9,19 @@ from aiogram.types import Message, TelegramObject
 
 from db import get_db
 from services.ban_service import is_banned
-from services.captcha_service import (
-    captcha_enabled, create_captcha_session, has_passed_captcha,
-)
+from services.captcha_service import captcha_enabled, create_captcha_session, has_passed_captcha
 from services.rate_limit_service import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
 _FREE_COMMANDS = {"/start", "/help", "/ping", "/report"}
 
-# Smart captcha: if user sends >= BURST_COUNT messages within BURST_WINDOW seconds,
-# revoke their captcha pass and require them to re-solve.
-BURST_COUNT  = 2
-BURST_WINDOW = 10  # seconds
+# Smart captcha thresholds:
+# Trigger if user sends >= BURST_TRIGGER messages within BURST_WINDOW seconds.
+# Normal users occasionally send 2-3 messages quickly (typo corrections, etc.)
+# so we set the bar at 5 rapid messages — clear spam signal.
+BURST_TRIGGER = 5   # messages within the window to trigger captcha
+BURST_WINDOW  = 10  # seconds
 
 
 class RateLimitMiddleware(BaseMiddleware):
@@ -38,7 +38,7 @@ class RateLimitMiddleware(BaseMiddleware):
         if user is None:
             return
 
-        # Free commands — bypass everything
+        # Free commands bypass all checks
         if event.text and any(event.text.startswith(cmd) for cmd in _FREE_COMMANDS):
             return await handler(event, data)
 
@@ -57,48 +57,59 @@ class RateLimitMiddleware(BaseMiddleware):
             )
             return
 
-        # Smart captcha: track burst and revoke pass if spamming fast
+        # Smart captcha burst detection — only when captcha feature is enabled
         if await captcha_enabled():
-            triggered = await _check_burst(user.id)
-            if triggered:
-                # Revoke captcha pass so middleware blocks next message
+            burst_hit = await _record_and_check_burst(user.id)
+            if burst_hit and await has_passed_captcha(user.id):
+                # Revoke pass and create a fresh captcha session
                 await get_db().users.update_one(
                     {"user_id": user.id},
                     {"$unset": {"captcha_passed": ""}},
                 )
                 await create_captcha_session(user.id)
+                # Clear burst so solving captcha starts fresh
+                await _reset_burst(user.id)
                 logger.info("Smart captcha triggered for user %d", user.id)
-                # Let the captcha middleware handle it on next message;
-                # still allow this message through to avoid false-positive on first burst
-            elif not await has_passed_captcha(user.id):
-                # captcha_enabled but user hasn't passed — captcha middleware handles it
-                pass
+                # Block this message — captcha middleware will show the prompt
+                # on the NEXT message; here we just drop it silently so the
+                # burst message itself doesn't go through either
+                await event.answer(
+                    "🔐 You are sending messages too fast.\n"
+                    "Please solve the captcha to continue."
+                )
+                return
 
         return await handler(event, data)
 
 
-async def _check_burst(user_id: int) -> bool:
+async def _record_and_check_burst(user_id: int) -> bool:
     """
-    Track recent message timestamps. Return True if the user sent
-    BURST_COUNT or more messages within BURST_WINDOW seconds.
-    Stores a rolling window of timestamps in a 'burst_track' collection.
+    Record this message timestamp and return True if the user has sent
+    >= BURST_TRIGGER messages within BURST_WINDOW seconds.
     """
     db = get_db()
     now = datetime.utcnow()
+    window_cutoff = now.timestamp() - BURST_WINDOW
 
     doc = await db.burst_track.find_one({"user_id": user_id})
     if doc is None:
         await db.burst_track.insert_one({"user_id": user_id, "timestamps": [now]})
         return False
 
-    # Keep only timestamps within the window
-    window_start = now.timestamp() - BURST_WINDOW
-    recent = [t for t in doc["timestamps"] if t.timestamp() > window_start]
+    # Keep only timestamps within the current window, then add now
+    recent = [t for t in doc["timestamps"] if t.timestamp() > window_cutoff]
     recent.append(now)
 
     await db.burst_track.update_one(
         {"user_id": user_id},
-        {"$set": {"timestamps": recent[-20:]}},  # cap at 20 entries
+        {"$set": {"timestamps": recent[-50:]}},
     )
+    return len(recent) >= BURST_TRIGGER
 
-    return len(recent) >= BURST_COUNT
+
+async def _reset_burst(user_id: int) -> None:
+    """Clear burst history so captcha-solving starts a clean window."""
+    await get_db().burst_track.update_one(
+        {"user_id": user_id},
+        {"$set": {"timestamps": []}},
+    )
